@@ -9,6 +9,7 @@ import os
 import math
 import operator
 import subprocess
+import statistics
 from collections import Counter
 from multiprocessing import Pool
 from datetime import datetime
@@ -58,22 +59,44 @@ def intFeatureBed(featurefile,chunkStart,chunkSize,afile):
     sys.stderr.write('BLERRP: another chunk bites the dust @ %s' % (str(datetime.now())) + '\n')
     return bedout,featset
 
-def calcEnrich(back_overlap,back_total,sub_overlap,sub_total):
-    enrichscore=math.log2((sub_overlap/sub_total)/(back_overlap/back_total))
-    return enrichscore
 
-'''
-def featureEnrich(back_overlaps,sub_overlaps,feat_list):
+def featureEnrich(back_overlaps,back_total,sub_overlaps,sub_total,feat_list,cutoff):
+    enrichscore_dict={}
     for feat in feat_list:
-        #make dict instead?
-        feat_back=[x for x in back_overlaps
-'''    
+        try:
+            back_count=back_overlaps[feat]
+        except KeyError:
+            back_count=0
+        try:
+            sub_count=sub_overlaps[feat]
+        except KeyError:
+            sub_count=0
+        if back_count > 0 and sub_count/sub_total >= cutoff:
+            enrichscore=math.log2((sub_count/sub_total)/(back_count/back_total))
+        else:
+            enrichscore=0
+        enrichscore_dict[feat]=[back_count,back_total,sub_count,sub_total,enrichscore]
 
+    return enrichscore_dict
 
+def calcZ(enrichscore_dict):
+    zscore_dict={}
+    allscores=[x[-1] for x in enrichscore_dict.values()]
+    print(allscores)
+    scoremean=sum(allscores)/len(allscores)
+    scorestdev=statistics.pstdev(allscores)
+    for feat,values in enrichscore_dict.items():
+        score=values[-1]
+        zscore = (score - scoremean) / scorestdev
+        zscore_dict[feat] = values+[zscore]
+    return zscore_dict
+  
 backfile=sys.argv[1]
 subfile=sys.argv[2]
 featurefile=sys.argv[3]
 cores=int(sys.argv[4])
+#overlap_cutoff=float(sys.argv[5])
+overlap_cutoff=0.001
 
 #sort shit
 backfile_sorted,back_total = sortInput(backfile)
@@ -85,24 +108,19 @@ bedpool = Pool(cores)
 backjobs = []
 backjobs=[bedpool.apply_async(intFeatureBed, (featurefile,chunkStart,chunkSize,backfile_sorted)) for chunkStart,chunkSize in chunkify(featurefile,1024*1024*1024)]
 
-
 subjobs = []
 subjobs=[bedpool.apply_async(intFeatureBed, (featurefile,chunkStart,chunkSize,subfile_sorted)) for chunkStart,chunkSize in chunkify(featurefile,1024*1024*1024)]
 
-
 #assuming everything in the background and subset files is one class of thing
 back_overlaps=[]
+big_featset=set()
 with open('background_blerr.bed','w') as fout:
     for backjob in backjobs:
-        bedout,featlist=backjob.get()
+        bedout,featset=backjob.get()
         debedout=bedout.decode()
         fout.write(debedout)
         back_overlaps+=[x.split('\t') for x in debedout.split('\n')]
-#print(back_overlaps)
-#count occurrences of feature overlaps
-#should we be counting unique overlaps instead?  is it even possible for them to be be non-unique?
-back_counts=Counter([x[7] for x in back_overlaps if len(x) > 1]).most_common()
-print(back_counts)        
+        big_featset=big_featset | featset
 
 sub_overlaps=[]
 with open('subset_blerr.bed','w') as fout:
@@ -116,4 +134,17 @@ with open('subset_blerr.bed','w') as fout:
 bedpool.close()
 bedpool.join()
 
-
+#print(back_overlaps)
+#count occurrences of feature overlaps
+back_uniq=list(set([(x[0],x[1],x[2],x[7]) for x in back_overlaps if len(x) > 1]))
+back_counts=dict(Counter([x[3] for x in back_uniq]).most_common())
+sub_uniq=list(set([(x[0],x[1],x[2],x[7]) for x in sub_overlaps if len(x) > 1]))
+sub_counts=dict(Counter([x[3] for x in sub_uniq]).most_common())
+#back_counts=dict(Counter([x[7] for x in back_overlaps if len(x) > 1]).most_common())
+#sub_counts=dict(Counter([x[7] for x in sub_overlaps if len(x) > 1]).most_common())
+enrichscores=featureEnrich(back_counts,back_total,sub_counts,sub_total,big_featset,overlap_cutoff)
+zscores=calcZ(enrichscores)
+with open('blerr_testout', 'w') as outfile:
+    for key,vals in zscores.items():
+        outline='\t'.join([str(x) for x in vals])
+        outfile.write('%s\t%s\n' % (key,outline))
