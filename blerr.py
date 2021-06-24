@@ -12,29 +12,51 @@ import subprocess
 import statistics
 import argparse
 import multiprocessing as mp
+import random
 from collections import Counter
 from datetime import datetime
 
 class BLERRception(Exception):
     pass
 
-#Break file into chunks to distribute to the pool
-def chunkify(fname,size):
-    fileEnd = os.path.getsize(fname)
-    with open(fname,'rb') as f:
-        chunkEnd = f.tell()
+def chunkParse(rawval):
+    if rawval.isdigit():
+        #bytes
+        parsed_val=int(rawval)
+    elif rawval[0:-1].isdigit():
+        if rawval[-1] in ('m','M'):
+            #megabytes
+            parsed_val=int(rawval[0:-1])*1000*1000
+        elif rawval[-1] in ('g','G'):
+            #gigabytes
+            parsed_val=int(rawval[0:-1])*1000*1000*1000
+        else:
+            sys.stderr.write('Incorrect chunk size suffix detected!  You entered %s.  Please use M for megabytes, G for gigabytes, or no suffix for bytes.\n' % rawval)
+            sys.stderr.write('Stopping...\n')
+            sys.exit(1)
+    else:
+        sys.stderr.write('Incorrect chunk size format detected!  You entered %s.  Value should be an integer, optionally followed by M for megabytes or G for gigabytes.\n' % rawval)
+        sys.stderr.write('Stopping...\n')
+        sys.exit(1)
+
+    return parsed_val
+
+def chunkify(filename,size):
+    file_end = os.path.getsize(filename)
+    with open(filename,'rb') as f:
+        chunk_end = f.tell()
         while True:
-            chunkStart = chunkEnd
+            chunk_start = chunk_end
             f.seek(size,1)
             f.readline()
-            chunkEnd = f.tell()
-            yield chunkStart, chunkEnd - chunkStart
-            if chunkEnd > fileEnd:
+            chunk_end = f.tell()
+            yield chunk_start, chunk_end - chunk_start
+            if chunk_end > file_end:
                 break
 
-def poolDump(poolname,afile_sorted,featurefile):
+def poolDump(poolname,afile_sorted,featurefile,target_chunksize):
     outjobs=[]
-    outjobs=[poolname.apply_async(intFeatureBed, (featurefile,chunkStart,chunkSize,afile_sorted)) for chunkStart,chunkSize in chunkify(featurefile,1024*1024)]
+    outjobs=[poolname.apply_async(intFeatureBed, (featurefile,chunk_start,chunk_size,afile_sorted)) for chunk_start,chunk_size in chunkify(featurefile,target_chunksize)]
     return outjobs
 
 def poolFetch(joblist,outfile):
@@ -49,7 +71,7 @@ def poolFetch(joblist,outfile):
             big_featset=big_featset | featset
     return overlaps,big_featset
 
-def sortInput(afile):
+def sortInput(afile,namebreaker):
     #also counts total input ranges
     with open(afile) as infile:
         afile_lines=infile.read().splitlines()
@@ -64,7 +86,7 @@ def sortInput(afile):
         else:   
             afile_sort = sorted(afile_split, key = lambda x: (x[0], int(x[1])))
             afile_out='\n'.join(['\t'.join(x) for x in afile_sort])
-            outname=afile+'_blerr_sorted'
+            outname=afile+'_blerr_sorted_'+namebreaker
             with open(outname,'w') as outfile:
                 outfile.write(afile_out+'\n')
             return outname, len(afile_lines)
@@ -122,13 +144,17 @@ def featureEnrich(back_overlaps,back_total,sub_overlaps,sub_total,feat_list,cuto
 def calcZ(enrichscore_dict):
     zscore_dict={}
     allscores=[x[-1] for x in enrichscore_dict.values()]
-    print(allscores)
     scoremean=sum(allscores)/len(allscores)
     scorestdev=statistics.pstdev(allscores)
     for feat,values in enrichscore_dict.items():
-        score=values[-1]
-        zscore = (score - scoremean) / scorestdev
+        try:
+            score=values[-1]
+            zscore = (score - scoremean) / scorestdev
+        except ZeroDivisionError:
+            zscore='NA'
+            sys.stderr.write('WARNING: %s had a standard deviation of 0; zscore cannot be calculated.\n' % feat)
         zscore_dict[feat] = values+[zscore]
+
     return zscore_dict
 
 def writeOutput(outfile_name,zscores):
@@ -145,7 +171,8 @@ if __name__ == '__main__':
     ap.add_argument('-f', '--feature', type=str, help='BED file of features',required=True)
     ap.add_argument('-o', '--output', type=str, default='blerr_output.tsv',help='Output file name (default=%(default)s)')
     ap.add_argument('-t', '--threads', type=int, default=1, help='Number of threads to use (default=%(default)s)')
-    ap.add_argument('-c', '--cutoff', type=float, default=0.05, help='Overlap cutoff (default=%(default)s)')
+    ap.add_argument('-c', '--cutoff', type=float, default=0.05, help='Overlap cutoff; minimum ratio of subset feature overlaps to total subset ranges (default=%(default)s)')
+    ap.add_argument('-cs', '--chunksize', type=str, default='100M', help='Break feature file into chunks of this size (default=%(default)s). Understands bytes (no suffix), megabytes (suffix M) and gigabytes (suffix G)')
     args = ap.parse_args()
 
     backfile=args.background
@@ -154,17 +181,21 @@ if __name__ == '__main__':
     cores=args.threads
     overlap_cutoff=args.cutoff
     outfile_name=args.output
+    raw_chunksize=args.chunksize
+    target_chunksize=chunkParse(raw_chunksize)
 
-    backfile_sorted,back_total = sortInput(backfile)
-    subfile_sorted,sub_total = sortInput(subfile)
+    namebreaker=''.join(random.choices('0123456789',k=6))
+
+    backfile_sorted,back_total = sortInput(backfile,namebreaker)
+    subfile_sorted,sub_total = sortInput(subfile,namebreaker)
 
     bedpool = mp.Pool(cores)
 
-    backjobs = poolDump(bedpool,backfile_sorted,featurefile)
-    subjobs = poolDump(bedpool,subfile_sorted,featurefile)
+    backjobs = poolDump(bedpool,backfile_sorted,featurefile,target_chunksize)
+    subjobs = poolDump(bedpool,subfile_sorted,featurefile,target_chunksize)
     
-    back_overlaps,featset = poolFetch(backjobs,'background_blerr.bed')
-    sub_overlaps,featset2 = poolFetch(subjobs,'subset_blerr.bed')
+    back_overlaps,featset = poolFetch(backjobs,'background_blerr_'+namebreaker+'.bed')
+    sub_overlaps,featset2 = poolFetch(subjobs,'subset_blerr_'+namebreaker+'.bed')
 
     bedpool.close()
     bedpool.join()
@@ -177,3 +208,4 @@ if __name__ == '__main__':
 
     writeOutput(outfile_name,zscores)
    
+
