@@ -166,9 +166,11 @@ def writeOutput(outfile_name,zscores):
 if __name__ == '__main__':  
 
     ap=argparse.ArgumentParser()
-    ap.add_argument('-b', '--background', type=str, help='BED file of background ranges',required=True)
+    ap.add_argument('-b', '--background', type=str, help='BED file of background ranges, or previously calculated overlap file (see -rb)',required=True)
     ap.add_argument('-s', '--subset', type=str, help='BED file of subset ranges',required=True)
     ap.add_argument('-f', '--feature', type=str, help='BED file of features',required=True)
+    ap.add_argument('-rb', '--reuse_background', type=int, default=0, help='Reuse previously calculated background overlap file. Value should be number of entries in original background file. -b should point to the overlap file.')
+    #ap.add_argument('-rs', '--reuse_subset', type=int, default=0, help='NOT CURRENTLY IMPLEMENTED. Reuse previously calculated subset overlap file. Value shold be number of entries in original subset file. -s should point to the overlap file.')
     ap.add_argument('-o', '--output', type=str, default='blerr_output.tsv',help='Output file name (default=%(default)s)')
     ap.add_argument('-t', '--threads', type=int, default=1, help='Number of threads to use (default=%(default)s)')
     ap.add_argument('-c', '--cutoff', type=float, default=0.05, help='Overlap cutoff; minimum ratio of subset feature overlaps to total subset ranges (default=%(default)s)')
@@ -183,23 +185,40 @@ if __name__ == '__main__':
     outfile_name=args.output
     raw_chunksize=args.chunksize
     target_chunksize=chunkParse(raw_chunksize)
-
+    rb=args.reuse_background
+    rs=args.reuse_subset
     namebreaker=''.join(random.choices('0123456789',k=6))
+    
+    if rb == 0:
+        backfile_sorted,back_total = sortInput(backfile,namebreaker)
+    else:
+        back_total=args.reuse_background
 
-    backfile_sorted,back_total = sortInput(backfile,namebreaker)
-    subfile_sorted,sub_total = sortInput(subfile,namebreaker)
+    if rs == 0:
+        subfile_sorted,sub_total = sortInput(subfile,namebreaker)
+    else:
+        sub_total_total=args.reuse_subset
+
 
     bedpool = mp.Pool(cores)
 
-    backjobs = poolDump(bedpool,backfile_sorted,featurefile,target_chunksize)
-    subjobs = poolDump(bedpool,subfile_sorted,featurefile,target_chunksize)
-    
-    back_overlaps,featset = poolFetch(backjobs,'background_blerr_'+namebreaker+'.bed')
-    sub_overlaps,featset2 = poolFetch(subjobs,'subset_blerr_'+namebreaker+'.bed')
+    if rb == 0:
+        backjobs = poolDump(bedpool,backfile_sorted,featurefile,target_chunksize)
+        back_overlaps,featset = poolFetch(backjobs,'background_blerr_'+namebreaker+'.bed')
+    #if rs == 0:
+    #    subjobs = poolDump(bedpool,subfile_sorted,featurefile,target_chunksize)
+    #    sub_overlaps,featset2 = poolFetch(subjobs,'subset_blerr_'+namebreaker+'.bed')
 
     bedpool.close()
     bedpool.join()
 
+    if rb != 0:
+        back_overlaps=[]
+        with open(backfile) as infile:
+            for line in infile:
+                back_overlaps.append(line.strip().split('\t'))
+        featset=featset2
+    
     back_counts=getCounts(back_overlaps)
     sub_counts=getCounts(sub_overlaps)
 
