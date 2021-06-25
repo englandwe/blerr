@@ -170,7 +170,7 @@ if __name__ == '__main__':
     ap.add_argument('-s', '--subset', type=str, help='BED file of subset ranges',required=True)
     ap.add_argument('-f', '--feature', type=str, help='BED file of features',required=True)
     ap.add_argument('-rb', '--reuse_background', type=int, default=0, help='Reuse previously calculated background overlap file. Value should be number of entries in original background file. -b should point to the overlap file.')
-    #ap.add_argument('-rs', '--reuse_subset', type=int, default=0, help='NOT CURRENTLY IMPLEMENTED. Reuse previously calculated subset overlap file. Value shold be number of entries in original subset file. -s should point to the overlap file.')
+    ap.add_argument('-rs', '--reuse_subset', type=int, default=0, help='NOT CURRENTLY IMPLEMENTED. Reuse previously calculated subset overlap file. Value shold be number of entries in original subset file. -s should point to the overlap file.')
     ap.add_argument('-o', '--output', type=str, default='blerr_output.tsv',help='Output file name (default=%(default)s)')
     ap.add_argument('-t', '--threads', type=int, default=1, help='Number of threads to use (default=%(default)s)')
     ap.add_argument('-c', '--cutoff', type=float, default=0.05, help='Overlap cutoff; minimum ratio of subset feature overlaps to total subset ranges (default=%(default)s)')
@@ -205,9 +205,9 @@ if __name__ == '__main__':
     if rb == 0:
         backjobs = poolDump(bedpool,backfile_sorted,featurefile,target_chunksize)
         back_overlaps,featset = poolFetch(backjobs,'background_blerr_'+namebreaker+'.bed')
-    #if rs == 0:
-    #    subjobs = poolDump(bedpool,subfile_sorted,featurefile,target_chunksize)
-    #    sub_overlaps,featset2 = poolFetch(subjobs,'subset_blerr_'+namebreaker+'.bed')
+    if rs == 0:
+        subjobs = poolDump(bedpool,subfile_sorted,featurefile,target_chunksize)
+        sub_overlaps,featset2 = poolFetch(subjobs,'subset_blerr_'+namebreaker+'.bed')
 
     bedpool.close()
     bedpool.join()
